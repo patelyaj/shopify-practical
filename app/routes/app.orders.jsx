@@ -82,28 +82,35 @@ export default function OrdersPage() {
     submit({}, { method: "post" });
   };
 
-  const rowMarkup = orders.map(
-    ({ shopify_order_id, email, created_at, financial_status, total_price, currency }, index) => (
-      <IndexTable.Row id={shopify_order_id} key={shopify_order_id} position={index}>
-        <IndexTable.Cell>
-          <Text variant="bodyMd" fontWeight="bold" as="span">
-            #{shopify_order_id}
-          </Text>
-        </IndexTable.Cell>
-        <IndexTable.Cell>{email || "No email"}</IndexTable.Cell>
-        <IndexTable.Cell>
-          {new Date(created_at).toLocaleDateString()}
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          <Badge tone={financial_status === "PAID" ? "success" : "attention"}>
-            {financial_status}
-          </Badge>
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          {currency} {total_price}
-        </IndexTable.Cell>
-      </IndexTable.Row>
-    )
+ const rowMarkup = orders.map(
+    ({ shopify_order_id, email, created_at, financial_status, total_price, currency }, index) => {
+
+      const normalizedStatus = (financial_status || "PENDING").toUpperCase();
+      
+      // 🚨 ADD THE 'return' KEYWORD HERE! 🚨
+      return (
+        <IndexTable.Row id={shopify_order_id} key={shopify_order_id} position={index}>
+          <IndexTable.Cell>
+            <Text variant="bodyMd" fontWeight="bold" as="span">
+              #{shopify_order_id}
+            </Text>
+          </IndexTable.Cell>
+          <IndexTable.Cell>{email || "No email"}</IndexTable.Cell>
+          <IndexTable.Cell>
+            {new Date(created_at).toLocaleDateString()}
+          </IndexTable.Cell>
+          
+          <IndexTable.Cell>
+            <Badge tone={normalizedStatus === "PAID" ? "success" : "attention"}>
+              {normalizedStatus}
+            </Badge>
+          </IndexTable.Cell>
+          <IndexTable.Cell>
+            {currency} {total_price}
+          </IndexTable.Cell>
+        </IndexTable.Row>
+      ); // 🚨 Don't forget to close the parenthesis and semicolon 🚨
+    }
   );
 
   return (
