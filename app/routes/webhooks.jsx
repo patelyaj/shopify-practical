@@ -94,20 +94,31 @@ async function processWebhook(topic, shop, payload) {
 }
 
 async function processWithRetry(topic, shop, payload) {
+  console.log(`Processing ${topic} for ${shop} and ${payload} with retry logic`);
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
+
+      // fake error
+      // if (attempt === 1 || attempt === 2 ) {
+      //    throw new Error("" Simulated database crash for testing!");
+      // }
+
+      // if (attempt === 1 || attempt === 2 || attempt === 3) {
+      //    throw new Error(" Simulated database crash for testing!");
+      // }
+
       await processWebhook(topic, shop, payload);
-      console.log(`✅ ${topic} succeeded on attempt ${attempt}`);
+      console.log(` ${topic} succeeded on attempt ${attempt}`);
       return; // done, exit loop
     } catch (err) {
-      console.error(`❌ Attempt ${attempt} failed for ${topic}:`, err.message);
+      console.error(` Attempt ${attempt} failed for ${topic}:`, err.message);
 
       if (attempt < MAX_ATTEMPTS) {
-        const delay = (2 ** (attempt - 1)) * 2000; // 2s → 4s
-        console.log(`Retrying in ${delay}ms...`);
-        await new Promise((r) => setTimeout(r, delay));
+        // const delay = (2 ** (attempt - 1)) ; // 2s → 4s
+        console.log(`Retrying in ${2}ms...`);
+        await new Promise((r) => setTimeout(r, 2000));
       } else {
-        console.error(`🚨 All ${MAX_ATTEMPTS} attempts failed for ${topic} (shop: ${shop})`);
+        console.error(` All ${MAX_ATTEMPTS} attempts failed for ${topic} (shop: ${shop})`);
       }
     }
   }
