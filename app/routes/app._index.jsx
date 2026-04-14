@@ -1,9 +1,9 @@
-import { useState } from "react";
-import { useLoaderData, useSubmit, useNavigation } from "react-router";
+import { useState, useEffect } from "react";
+import { useLoaderData, useSubmit, useNavigation , useActionData} from "react-router";
 import db from "../db.server";
 import axios from "axios";
 import { authenticate } from "../shopify.server";
-import { Page, Layout, Spinner } from "@shopify/polaris";
+import { Page, Layout, Spinner, Frame, Toast } from "@shopify/polaris";
 
 import CreateProductModal from "../components/CreateProductModal";
 import DescriptionModal from "../components/DescriptionModal";
@@ -74,14 +74,28 @@ export async function action({ request }) {
     try {
       const response = await axios.post(`https://${shop}/admin/api/2024-01/products.json`, { product: { ...getProductData(), variants: [getVariantData()] } }, { headers });
       const p = response.data.product;
-      await db.product.create({
-        data: { 
-          shopify_product_id: p.id, title: p.title, description: p.body_html, vendor: p.vendor, 
-          product_type: p.product_type, status: p.status, price: parseFloat(p.variants[0].price), 
-          sku: p.variants[0].sku, created_at: new Date(p.created_at), updated_at: new Date(p.updated_at), isDeleted: false 
-        },
-      });
-      return { success: true };
+      let dbSuccess = true; 
+      // main thing to do if shopify pass and db fails than the message user should see
+      try {
+        await db.product.create({
+          data: { 
+            shopify_product_id: p.id, title: p.title, description: p.body_html, vendor: p.vendor, 
+            product_type: p.product_type, status: p.status, price: parseFloat(p.variants[0].price), 
+            sku: p.variants[0].sku, created_at: new Date(p.created_at), updated_at: new Date(p.updated_at), isDeleted: false 
+          },
+        });
+      } catch (dbErr) {
+        dbSuccess = false;
+        console.log("Optimistic local DB write skipped, relying on Webhook.");
+      }
+      
+      return { 
+        success: true, 
+        message: dbSuccess 
+          ? "Product created successfully!" 
+          : "Product saved to Shopify but will take a few mins to appear here. If it doesn't, try syncing the data again.",
+        isError: false
+      };
     } catch (error) {
       console.error("Create Product Error:", error.response?.data || error.message);
       return { success: false, error: "Failed to create product." };
@@ -95,16 +109,30 @@ export async function action({ request }) {
       const variantId = getRes.data.product.variants[0].id;
       
       await axios.put(`https://${shop}/admin/api/2024-01/products/${shopifyId}.json`, { product: { id: shopifyId, ...getProductData(), variants: [{ id: variantId, ...getVariantData() }] } }, { headers });
+      // main thing to do if shopify pass and db fails than the message user should see
+      let dbSuccess = true;
       
-      await db.product.updateMany({
-        where: { shopify_product_id: shopifyId },
-        data: { 
-          title: formData.get("title"), description: formData.get("description"), vendor: formData.get("vendor"), 
-          product_type: formData.get("product_type"), status: formData.get("status"), price: parseFloat(formData.get("price")), 
-          sku: formData.get("sku"), updated_at: new Date(), isDeleted: false
-        },
-      });
-      return { success: true };
+      try {
+        await db.product.updateMany({
+          where: { shopify_product_id: shopifyId },
+          data: { 
+            title: formData.get("title"), description: formData.get("description"), vendor: formData.get("vendor"), 
+            product_type: formData.get("product_type"), status: formData.get("status"), price: parseFloat(formData.get("price")), 
+            sku: formData.get("sku"), updated_at: new Date(), isDeleted: false
+          },
+        });
+      } catch (dbErr) {
+        console.log("Optimistic local DB update skipped, relying on Webhook.");
+        dbSuccess = false;
+      }
+      
+      return { 
+        success: true, 
+        message: dbSuccess 
+          ? "Product updated successfully!" 
+          : "Product updated in Shopify but will take a few mins to appear here. If it doesn't, try syncing the data again.",
+        isError: false
+      };
     } catch (error) {
       console.error("Update Product Error:", error.response?.data || error.message);
       return { success: false, error: "Failed to update product." };
@@ -115,8 +143,22 @@ export async function action({ request }) {
     try {
       const shopifyId = formData.get("shopify_product_id");
       await axios.delete(`https://${shop}/admin/api/2024-01/products/${shopifyId}.json`, { headers });
-      await db.product.updateMany({ where: { shopify_product_id: shopifyId }, data: { isDeleted: true } });
-      return { success: true };
+      // main thing to do if shopify pass and db fails than the message user should see
+      let dbSuccess = true;
+      
+      try {
+        await db.product.updateMany({ where: { shopify_product_id: shopifyId }, data: { isDeleted: true } });
+      } catch (dbErr) {
+        dbSuccess = false;
+      }
+      
+      return { 
+        success: true, 
+        message: dbSuccess 
+          ? "Product deleted successfully!" 
+          : "Product deleted from Shopify but will take a few mins to disappear here. If it doesn't, try syncing the data again.",
+        isError: false
+      };
     } catch (error) {
       console.error("Delete Product Error:", error.response?.data || error.message);
       return { success: false, error: "Failed to delete product." };
@@ -133,6 +175,8 @@ export default function IndexPage() {
   const submit = useSubmit();
   const navigation = useNavigation();
 
+  const actionData = useActionData();
+
   const isSubmitting = navigation.state === "submitting" || navigation.state === "loading";
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -140,6 +184,24 @@ export default function IndexPage() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [editFormErrors, setEditFormErrors] = useState({}); 
+
+  const [toastActive, setToastActive] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastIsError, setToastIsError] = useState(false);
+
+  useEffect(() => {
+    if (actionData && actionData.message) {
+      setToastMessage(actionData.message);
+      setToastIsError(actionData.isError || false);
+      setToastActive(true);
+    }
+  }, [actionData]);
+
+  const toggleToast = () => setToastActive((active) => !active);
+
+  const toastMarkup = toastActive ? (
+    <Toast content={toastMessage} error={toastIsError} onDismiss={toggleToast} duration={5000} />
+  ) : null;
 
   const handleEditChange = (value, id) => {
     setEditForm(prev => ({ ...prev, [id]: value }));
@@ -187,7 +249,7 @@ export default function IndexPage() {
   };
 
   return (
-    <>
+    <Frame>
       {/* spinner overlay */}
       {isSubmitting && (
         <div style={{
@@ -207,7 +269,7 @@ export default function IndexPage() {
       )}
 
       <Page 
-        title="Product Manager" 
+        title="Product List" 
         primaryAction={{ content: 'Add Product', onAction: () => setIsCreateModalOpen(true) }}
         secondaryActions={[{ content: 'Sync Data', onAction: handleSync }]}
       >
@@ -242,6 +304,7 @@ export default function IndexPage() {
           description={descModalData.text} 
         />
       </Page>
-    </>
+      {toastMarkup}
+    </Frame>
   );
 }

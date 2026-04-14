@@ -115,7 +115,7 @@ async function processWithRetry(topic, shop, payload) {
 
       if (attempt < MAX_ATTEMPTS) {
         // const delay = (2 ** (attempt - 1)) ; // 2s → 4s
-        console.log(`Retrying in ${2}ms...`);
+        console.log(`Retrying in ${2000}ms...`);
         await new Promise((r) => setTimeout(r, 2000));
       } else {
         console.error(` All ${MAX_ATTEMPTS} attempts failed for ${topic} (shop: ${shop})`);

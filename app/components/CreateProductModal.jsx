@@ -54,8 +54,8 @@ if (!form.price || !/^\d+$/.test(form.price)) {
       open={isOpen}
       onClose={handleClose}
       title="Create New Product"
-      primaryAction={{ content: 'Save Product', onAction: handleSave }}
-      secondaryActions={[{ content: 'Cancel', onAction: handleClose }]}
+      primaryAction={{ content: 'Save Product', onAction: handleSave}}
+      secondaryActions={[{ content: 'Cancel', onAction: handleClose}]}
     >
       <Modal.Section>
         <FormLayout>
