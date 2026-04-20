@@ -1,8 +1,17 @@
-// routes/webhooks.jsx
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 
 const MAX_ATTEMPTS = 3;
+
+function shopifyOptionsToVariantsJson(options) {
+  if (!options || options.length === 0) return {};
+  
+  const validOptions = options.filter(opt => opt.name !== "Title" || !opt.values.includes("Default Title"));
+  
+  return Object.fromEntries(
+    validOptions.map(opt => [opt.name, opt.values]) // FIXED: Removed .toLowerCase()
+  );
+}
 
 async function processWebhook(topic, shop, payload) {
   switch (topic) {
@@ -15,6 +24,7 @@ async function processWebhook(topic, shop, payload) {
         if (isNaN(safePrice)) safePrice = 0;
       }
       const safeSku = payload.variants?.[0]?.sku ?? "";
+      const variantsJson = shopifyOptionsToVariantsJson(payload.options);
 
       await db.product.upsert({
         where: { shopify_product_id: productId },
@@ -26,6 +36,7 @@ async function processWebhook(topic, shop, payload) {
           status: payload.status || "active",
           price: safePrice,
           sku: safeSku,
+          variants: variantsJson, 
           updated_at: new Date(payload.updated_at),
           isDeleted: false,
         },
@@ -38,6 +49,7 @@ async function processWebhook(topic, shop, payload) {
           status: payload.status || "active",
           price: safePrice,
           sku: safeSku,
+          variants: variantsJson, 
           created_at: new Date(payload.created_at),
           updated_at: new Date(payload.updated_at),
           isDeleted: false,
@@ -94,31 +106,18 @@ async function processWebhook(topic, shop, payload) {
 }
 
 async function processWithRetry(topic, shop, payload) {
-  console.log(`Processing ${topic} for ${shop} and ${payload} with retry logic`);
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-
-      // fake error
-      // if (attempt === 1 || attempt === 2 ) {
-      //    throw new Error("" Simulated database crash for testing!");
-      // }
-
-      // if (attempt === 1 || attempt === 2 || attempt === 3) {
-      //    throw new Error(" Simulated database crash for testing!");
-      // }
-
       await processWebhook(topic, shop, payload);
-      console.log(` ${topic} succeeded on attempt ${attempt}`);
-      return; // done, exit loop
+      console.log(`✅ ${topic} succeeded on attempt ${attempt}`);
+      return;
     } catch (err) {
-      console.error(` Attempt ${attempt} failed for ${topic}:`, err.message);
-
+      console.error(`❌ Attempt ${attempt} failed for ${topic}:`, err.message);
       if (attempt < MAX_ATTEMPTS) {
-        // const delay = (2 ** (attempt - 1)) ; // 2s → 4s
-        console.log(`Retrying in ${2000}ms...`);
+        console.log(`Retrying in 2000ms...`);
         await new Promise((r) => setTimeout(r, 2000));
       } else {
-        console.error(` All ${MAX_ATTEMPTS} attempts failed for ${topic} (shop: ${shop})`);
+        console.error(`🚨 All ${MAX_ATTEMPTS} attempts failed for ${topic} (shop: ${shop})`);
       }
     }
   }
@@ -128,10 +127,9 @@ export async function action({ request }) {
   const { topic, shop, payload } = await authenticate.webhook(request);
   console.log(`Received ${topic} webhook for ${shop}`);
 
-  // Fire and forget — don't await, so Shopify gets 200 immediately
   processWithRetry(topic, shop, payload).catch((err) => {
     console.error(`Fatal retry error for ${topic}:`, err);
   });
-
+  
   return new Response("Webhook received", { status: 200 });
 }

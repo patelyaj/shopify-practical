@@ -45,6 +45,9 @@ model Product {
   price Float?
   sku   String?
 
+  variants Json?
+  history  Json?
+  
   created_at DateTime?
   updated_at DateTime?
   synced_at  DateTime @default(now())
