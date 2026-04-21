@@ -171,7 +171,7 @@ export async function action({ request }) {
         isError: false,
       };
     } catch {
-      return { success: false, message: "Failed to create product.", isError: true };
+      return { success: false, message: "Try again! Failed to create product.", isError: true };
     }
   }
 
@@ -247,18 +247,47 @@ export async function action({ request }) {
         };
 
         if (existingProduct) {
+
+          const snapshot = {
+            title: existingProduct.title,
+            description: existingProduct.description,
+            vendor: existingProduct.vendor,
+            product_type: existingProduct.product_type, 
+            status: existingProduct.status,
+            price: existingProduct.price,
+            sku: existingProduct.sku,
+            variants: existingProduct.variants, 
+          };
+
           const changes = [];
           if (existingProduct.title !== updateData.title) changes.push(`Title: "${existingProduct.title}" → "${updateData.title}"`);
           if (existingProduct.price !== updateData.price) changes.push(`Price: Rs.${existingProduct.price} → Rs.${updateData.price}`);
           if (existingProduct.status !== updateData.status) changes.push(`Status: ${existingProduct.status} → ${updateData.status}`);
           if (existingProduct.sku !== updateData.sku) changes.push(`SKU: "${existingProduct.sku}" → "${updateData.sku}"`);
           if (existingProduct.vendor !== updateData.vendor) changes.push(`Vendor: "${existingProduct.vendor}" → "${updateData.vendor}"`);
-          if (changes.length === 0) changes.push("Details or variants updated");
+          if ((existingProduct.description || "") !== (updateData.description || "")) changes.push(`Description updated: ${existingProduct.description} to ${updateData.description}`);
+          // if (JSON.stringify(existingProduct.variants) !== JSON.stringify(updateData.variants)) changes.push(`Variants updated : ${existingProduct.variants} to ${updateData.variants}`);
+
+          const oldVariants = existingProduct.variants || {};
+          const newVariants = updateData.variants || {};
+
+          const allKeys = new Set([...Object.keys(oldVariants), ...Object.keys(newVariants)]);
+
+          for (const key of allKeys) {
+            const oldVal = JSON.stringify(oldVariants[key] || []);
+            const newVal = JSON.stringify(newVariants[key] || []);
+            if (oldVal !== newVal) {
+              changes.push(`Variant "${key}": [${oldVariants[key] || "none"}]  to [${newVariants[key] || "none"}]`);
+            }
+          } 
+
+          if (changes.length === 0) changes.push("No changes detected");
 
           let currentHistory = existingProduct.history || [];
           if (!Array.isArray(currentHistory)) currentHistory = [];
+
           updateData.history = [
-            { date: new Date().toISOString(), changes },
+            { date: new Date().toISOString(), changes , snapshot },
             ...currentHistory,
           ].slice(0, 5);
         }
@@ -276,7 +305,7 @@ export async function action({ request }) {
       };
     } catch (err) {
       console.error("Update error:", err.response?.data || err.message);
-      return { success: false, message: "Failed to update product.", isError: true };
+      return { success: false, message: "Try again! Failed to update product.", isError: true };
     }
   }
 
@@ -298,9 +327,97 @@ export async function action({ request }) {
         isError: false,
       };
     } catch {
-      return { success: false, message: "Failed to delete product.", isError: true };
+      return { success: false, message: "Try again! Failed to delete product.", isError: true };
     }
   }
+
+  // ── REVERT ──
+if (type === "revert") {
+  try {
+    const shopifyId = formData.get("shopify_product_id");
+    const snapshot = JSON.parse(formData.get("snapshot"));
+
+    // Fetch current Shopify variant IDs
+    const getRes = await axios.get(
+      `https://${shop}/admin/api/2024-01/products/${shopifyId}.json`,
+      { headers }
+    );
+    const existingShopifyVariants = getRes.data.product.variants;
+
+    // Build options and variants from snapshot
+    const shopifyOptions = variantsJsonToShopifyOptions(snapshot.variants);
+    const shopifyVariants = buildShopifyVariants(snapshot.variants, snapshot.price, snapshot.sku);
+
+    // 3. Delete orphaned variants if snapshot has fewer combinations
+    if (existingShopifyVariants.length > shopifyVariants.length) {
+      const variantsToDelete = existingShopifyVariants.slice(shopifyVariants.length);
+      await Promise.all(
+        variantsToDelete.map(v =>
+          axios.delete(
+            `https://${shop}/admin/api/2024-01/products/${shopifyId}/variants/${v.id}.json`,
+            { headers }
+          ).catch(err => console.warn(`Could not delete variant ${v.id}:`, err.message))
+        )
+      );
+    }
+
+    // 4. Merge existing IDs into snapshot variants
+    const mergedVariants = shopifyVariants.map((v, i) => ({
+      ...v,
+      ...(existingShopifyVariants[i] ? { id: existingShopifyVariants[i].id } : {}),
+    }));
+
+    // 5. PUT snapshot data to Shopify
+    await axios.put(
+      `https://${shop}/admin/api/2024-01/products/${shopifyId}.json`,
+      {
+        product: {
+          id: shopifyId,
+          title: snapshot.title,
+          body_html: snapshot.description,
+          vendor: snapshot.vendor,
+          product_type: snapshot.product_type,
+          status: snapshot.status,
+          options: shopifyOptions,
+          variants: mergedVariants,
+        }
+      },
+      { headers }
+    );
+
+    // 6. Update DB with snapshot values + record revert in history
+    const existingProduct = await db.product.findFirst({
+      where: { shopify_product_id: BigInt(shopifyId) }
+    });
+
+    let currentHistory = existingProduct?.history || [];
+    if (!Array.isArray(currentHistory)) currentHistory = [];
+
+    await db.product.updateMany({
+      where: { shopify_product_id: shopifyId },
+      data: {
+        title: snapshot.title,
+        description: snapshot.description,
+        vendor: snapshot.vendor,
+        product_type: snapshot.product_type,
+        status: snapshot.status,
+        price: parseFloat(snapshot.price),
+        sku: snapshot.sku,
+        variants: snapshot.variants,
+        updated_at: new Date(),
+        history: [
+          { date: new Date().toISOString(), changes: ["Product reverted"], snapshot: null },
+          ...currentHistory,
+        ].slice(0, 5),
+      },
+    });
+
+    return { success: true, message: "Product reverted successfully!", isError: false };
+  } catch (err) {
+    console.error("Revert error:", err.response?.data || err.message);
+    return { success: false, message: "Try again! Failed to revert product.", isError: true };
+  }
+}
 
   return null;
 }
@@ -318,7 +435,7 @@ export default function IndexPage() {
   const [productModal, setProductModal] = useState({ isOpen: false, initialData: null });
   const [descModalData, setDescModalData] = useState({ isOpen: false, text: "" });
   const [variantsModal, setVariantsModal] = useState({ isOpen: false, productTitle: "", variants: null });
-  const [historyModal, setHistoryModal] = useState({ isOpen: false, productTitle: "", history: null });
+  const [historyModal, setHistoryModal] = useState({ isOpen: false, productTitle: "", history: null, shopifyId: null });
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, shopifyId: null });
 
   const [toastActive, setToastActive] = useState(false);
@@ -346,6 +463,19 @@ export default function IndexPage() {
     setDeleteModal({ isOpen: false, shopifyId: null });
   };
 
+  const handleRevertChange = (entry) => {
+  if (!entry.snapshot) return;
+  submit(
+    {
+      type: "revert",
+      shopify_product_id: historyModal.shopifyId,
+      snapshot: JSON.stringify(entry.snapshot),
+    },
+    { method: "post" }
+  );
+  setHistoryModal({ isOpen: false, productTitle: "", history: null, shopifyId: null });
+};
+
   return (
     <Frame>
       {isSubmitting && (
@@ -368,8 +498,8 @@ export default function IndexPage() {
               onStartEditing={openEditModal}
               onDelete={handleDeleteClick}
               onOpenDescription={(text) => setDescModalData({ isOpen: true, text })}
-              onViewVariants={(p) => setVariantsModal({ isOpen: true, productTitle: p.title, variants: p.variants })}
-              onViewHistory={(p) => setHistoryModal({ isOpen: true, productTitle: p.title, history: p.history })}
+              onViewVariants={(p) => setVariantsModal({ isOpen: true, productTitle: p.title, variants: p.variants})}
+              onViewHistory={(p) => setHistoryModal({ isOpen: true, productTitle: p.title, history: p.history, shopifyId: p.shopify_product_id?.toString() })}
             />
           </Layout.Section>
         </Layout>
@@ -456,7 +586,7 @@ export default function IndexPage() {
 
         <Modal
           open={historyModal.isOpen}
-          onClose={() => setHistoryModal({ isOpen: false, productTitle: "", history: null })}
+          onClose={() => setHistoryModal({ isOpen: false, productTitle: "", history: null, shopifyId: null })}
           title={`Recent Changes - ${historyModal.productTitle}`}
           primaryAction={{ content: "Close", onAction: () => setHistoryModal({ isOpen: false, productTitle: "", history: null }) }}
         >
@@ -464,11 +594,20 @@ export default function IndexPage() {
             {historyModal.history && historyModal.history.length > 0 ? (
               <BlockStack gap="400">
                 {historyModal.history.map((entry, idx) => (
-                  <div key={idx} style={{ paddingBottom: "12px", borderBottom: idx !== historyModal.history.length - 1 ? "1px solid #E1E3E5" : "none" }}>
-                    <Text variant="headingSm" as="h6">{new Date(entry.date).toLocaleString()}</Text>
-                    <ul style={{ margin: "8px 0 0 16px", padding: 0, color: "#202223", fontSize: "13px" }}>
-                      {entry.changes.map((change, i) => <li key={i}>{change}</li>)}
-                    </ul>
+                  <div key={idx} style={{ display : "flex" , flexDirection: "row", justifyContent: "space-between" , paddingBottom: "12px", borderBottom: idx !== historyModal.history.length - 1 ? "1px solid #E1E3E5" : "none" }}>
+                    <div style={{}}>
+                      <Text variant="headingSm" as="h6">{new Date(entry.date).toLocaleString()}</Text>
+                        <ul  style={{ margin: "8px 0 0 16px", padding: 0, color: "#202223", fontSize: "13px", display: "flex", flexDirection: "column" , justifyContent : "space-between" }}>
+                        {entry.changes.map((change, i) => <li key={i}>{change}</li>)}  
+                      </ul>
+                    </div>
+
+                    <div>
+                      {entry.snapshot && <button onClick={() => handleRevertChange(entry)}>Revert this change</button> }
+                    </div>
+
+                    {/* </div> */}
+
                   </div>
                 ))}
               </BlockStack>
